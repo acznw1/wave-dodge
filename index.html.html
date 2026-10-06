@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>波形躲避</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a1a; overflow:hidden; touch-action:none; -webkit-user-select:none; user-select:none; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #ui { position:absolute; top:0; left:0; right:0; bottom:0; pointer-events:none; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  #startBtn { pointer-events:auto; padding:16px 48px; font-size:22px; background:linear-gradient(135deg,#6c5ce7,#a29bfe); border:none; border-radius:30px; color:#fff; font-weight:bold; box-shadow:0 4px 20px rgba(108,92,231,0.4); }
+  #score { position:absolute; top:15px; left:50%; transform:translateX(-50%); color:#fff; font-size:20px; font-weight:bold; text-shadow:0 0 10px rgba(255,255,255,0.5); }
+  #hint { position:absolute; bottom:20px; left:0; right:0; text-align:center; color:rgba(255,255,255,0.4); font-size:13px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <button id="startBtn">开始游戏</button>
+</div>
+<div id="score" style="display:none;">得分: 0</div>
+<div id="hint">手指拖动小球躲避障碍物</div>
+
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W, H;
+
+function resize() {
+  W = cv.width = window.innerWidth;
+  H = cv.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// 游戏状态
+let state = 'menu'; // menu, playing, over
+let score = 0, speed = 3, frame = 0;
+let player = { x: 0, y: 0, r: 12 };
+let obstacles = [];
+let particles = [];
+let trail = [];
+let waveOffset = 0;
+
+// 正弦波参数
+let waveAmp = 60, waveFreq = 0.015;
+
+function waveY(x) {
+  return H * 0.5 + Math.sin(x * waveFreq + waveOffset) * waveAmp;
+}
+
+// 初始化玩家位置
+function initPlayer() {
+  player.x = W * 0.3;
+  player.y = waveY(player.x);
+}
+
+// 生成障碍物
+function spawnObstacle() {
+  const y = Math.random() * H;
+  obstacles.push({
+    x: W + 20,
+    y: y,
+    w: 25 + Math.random() * 20,
+    h: 25 + Math.random() * 20,
+    color: `hsl(${Math.random()*60 + 330}, 80%, 60%)`,
+    speed: speed + Math.random() * 2
+  });
+}
+
+// 粒子效果
+function burst(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 10,
+      vy: (Math.random() - 0.5) * 10,
+      life: 1,
+      color,
+      size: Math.random() * 4 + 2
+    });
+  }
+}
+
+// 碰撞检测
+function checkCollision(p, o) {
+  const dx = p.x - (o.x + o.w/2);
+  const dy = p.y - (o.y + o.h/2);
+  return Math.abs(dx) < (o.w/2 + p.r) && Math.abs(dy) < (o.h/2 + p.r);
+}
+
+// 触摸控制
+let touching = false;
+cv.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (state !== 'playing') return;
+  touching = true;
+  const t = e.touches[0];
+  player.x = t.clientX;
+  player.y = t.clientY;
+});
+
+cv.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (!touching || state !== 'playing') return;
+  const t = e.touches[0];
+  player.x = t.clientX;
+  player.y = t.clientY;
+});
+
+cv.addEventListener('touchend', e => {
+  e.preventDefault();
+  touching = false;
+});
+
+// 鼠标兼容（电脑上也能玩）
+cv.addEventListener('mousedown', e => {
+  if (state !== 'playing') return;
+  touching = true;
+  player.x = e.clientX;
+  player.y = e.clientY;
+});
+cv.addEventListener('mousemove', e => {
+  if (!touching || state !== 'playing') return;
+  player.x = e.clientX;
+  player.y = e.clientY;
+});
+cv.addEventListener('mouseup', () => touching = false);
+
+// 开始按钮
+document.getElementById('startBtn').addEventListener('click', () => {
+  state = 'playing';
+  score = 0;
+  speed = 3;
+  frame = 0;
+  obstacles = [];
+  particles = [];
+  trail = [];
+  initPlayer();
+  document.getElementById('ui').style.display = 'none';
+  document.getElementById('score').style.display = 'block';
+  document.getElementById('hint').style.display = 'block';
+});
+
+// 游戏结束
+function gameOver() {
+  state = 'over';
+  burst(player.x, player.y, '#ff6b6b', 30);
+  setTimeout(() => {
+    document.getElementById('ui').style.display = 'flex';
+    document.getElementById('startBtn').textContent = `得分 ${score} - 再来一次`;
+    document.getElementById('score').style.display = 'none';
+  }, 800);
+}
+
+// 绘制
+function draw() {
+  // 背景渐变
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0a0a1a');
+  grad.addColorStop(1, '#1a1a3e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // 绘制正弦波轨道
+  ctx.strokeStyle = 'rgba(108, 92, 231, 0.3)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  for (let x = 0; x < W; x += 3) {
+    const y = waveY(x);
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // 绘制余弦波（装饰）
+  ctx.strokeStyle = 'rgba(253, 121, 168, 0.15)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = 0; x < W; x += 3) {
+    const y = H * 0.5 + Math.cos(x * waveFreq + waveOffset) * waveAmp * 0.7;
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  if (state === 'playing') {
+    waveOffset += 0.03;
+    frame++;
+    score = Math.floor(frame / 10);
+
+    // 难度递增
+    if (frame % 500 === 0) {
+      speed += 0.5;
+      waveAmp = Math.min(100, waveAmp + 5);
+    }
+
+    // 生成障碍物
+    if (frame % Math.max(20, 50 - Math.floor(speed * 3)) === 0) {
+      spawnObstacle();
+    }
+
+    // 更新障碍物
+    obstacles.forEach(o => {
+      o.x -= o.speed;
+    });
+    obstacles = obstacles.filter(o => o.x > -50);
+
+    // 碰撞检测
+    for (const o of obstacles) {
+      if (checkCollision(player, o)) {
+        gameOver();
+        break;
+      }
+    }
+
+    // 玩家轨迹
+    trail.push({ x: player.x, y: player.y, life: 1 });
+    if (trail.length > 20) trail.shift();
+    trail.forEach(t => t.life -= 0.05);
+    trail = trail.filter(t => t.life > 0);
+
+    // 更新分数显示
+    document.getElementById('score').textContent = `得分: ${score}`;
+  }
+
+  // 绘制轨迹
+  trail.forEach((t, i) => {
+    ctx.fillStyle = `rgba(108, 92, 231, ${t.life * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, player.r * t.life * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // 绘制障碍物
+  obstacles.forEach(o => {
+    // 光晕
+    ctx.fillStyle = o.color + '33';
+    ctx.fillRect(o.x - 3, o.y - 3, o.w + 6, o.h + 6);
+    // 本体
+    ctx.fillStyle = o.color;
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+    // 高光
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.fillRect(o.x, o.y, o.w, o.h * 0.3);
+  });
+
+  // 绘制玩家
+  if (state !== 'over') {
+    // 外圈光晕
+    ctx.fillStyle = 'rgba(108, 92, 231, 0.3)';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r + 8, 0, Math.PI * 2);
+    ctx.fill();
+    // 本体
+    const pGrad = ctx.createRadialGradient(player.x, player.y, 0, player.x, player.y, player.r);
+    pGrad.addColorStop(0, '#a29bfe');
+    pGrad.addColorStop(1, '#6c5ce7');
+    ctx.fillStyle = pGrad;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+    ctx.fill();
+    // 高光
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.beginPath();
+    ctx.arc(player.x - 3, player.y - 3, player.r * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 绘制粒子
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.2;
+    p.life -= 0.02;
+    if (p.life > 0) {
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.life;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  });
+  particles = particles.filter(p => p.life > 0);
+}
+
+// 主循环
+function loop() {
+  draw();
+  requestAnimationFrame(loop);
+}
+
+initPlayer();
+loop();
+</script>
+</body>
+</html>
